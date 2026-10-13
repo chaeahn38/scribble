@@ -734,15 +734,23 @@ function currentPenSettings() {
 
 // Arm-pivot offset per pen angle. Not pure trig — hand-tuned to feel right, so only extend
 // this table by eye rather than regenerating it from a formula.
+// Calibrated against a real Apple Pencil on iPad Safari (2026-10-13): at each dial angle, the
+// drawn ink was visibly offset from the physical pencil-tip contact point by some number of
+// ~10px units, measured by the user directly against the glass. Each dial angle indexes this
+// table via its servoBaseAngle-transformed (internal) value, not the dial number itself — e.g.
+// dial 90° measures into the 0° entry below. Fixed: dial 90°→table[0] +20x, dial 0°→table[90]
+// +10y, dial 45°→table[45] +10y, dial 30°→table[60] +20y, dial -30°→table[-60] +10x,
+// dial -45°→table[-45] -20y, dial -60°→table[-30] +20x. (dial 60°/table[30] wasn't measured —
+// left as-is.)
 const angleOffsets = {
-  90: { x: 0, y: -60 },
-  60: { x: -30, y: -52 },
-  45: { x: -30, y: -50 },
+  90: { x: 0, y: -50 },
+  60: { x: -30, y: -32 },
+  45: { x: -30, y: -40 },
   30: { x: -52, y: -30 },
-  0: { x: -60, y: 0 },
-  "-30": { x: -52, y: 30 },
-  "-45": { x: -25, y: 50 },
-  "-60": { x: -30, y: 52 },
+  0: { x: -40, y: 0 },
+  "-30": { x: -32, y: 30 },
+  "-45": { x: -25, y: 30 },
+  "-60": { x: -20, y: 52 },
 };
 const knownAngleOffsetKeys = Object.keys(angleOffsets)
   .map(Number)
@@ -2008,10 +2016,47 @@ function screenToWorld(clientX, clientY) {
 // (e.g. a resting palm) starting a stray second stroke while one is already in progress.
 let activePointerId = null;
 
+// Two-finger pinch-to-zoom. Apple Pencil always reports pointerType "pen", never "touch", so
+// this can never be confused with actual drawing. The first finger down is indistinguishable
+// from an ordinary single-touch draw until a second one lands — when it does, whatever
+// single-finger stroke/pan had just started is abandoned (harmless: it's at most one point, so
+// it was never going to be committed anyway) and both fingers switch to pinch tracking instead.
+const activeTouchPoints = new Map(); // pointerId -> {x, y} in client coordinates
+let pinching = false;
+let pinchLastDistance = 0;
+
+function distanceBetween(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function midpointBetween(a, b) {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
 canvas.addEventListener("pointerdown", (e) => {
-  if (activePointerId !== null) return;
+  if (e.pointerType === "touch") {
+    activeTouchPoints.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (activeTouchPoints.size === 2) {
+      isDrawing = false;
+      currentStroke = null;
+      isPanning = false;
+      activePointerId = null;
+      pinching = true;
+      const [a, b] = activeTouchPoints.values();
+      pinchLastDistance = distanceBetween(a, b);
+      return;
+    }
+    if (activeTouchPoints.size > 2) return; // a third finger — ignore it entirely
+  }
+
+  if (pinching || activePointerId !== null) return;
   activePointerId = e.pointerId;
-  canvas.setPointerCapture(e.pointerId);
+  try {
+    canvas.setPointerCapture(e.pointerId);
+  } catch {
+    // Pointer already gone (e.g. a very quick tap) — the up/cancel handler below still runs
+    // normally since this doesn't abort the stroke, just loses the outside-canvas-bounds safety net.
+  }
 
   if (spacePanning) {
     isPanning = true;
@@ -2040,6 +2085,36 @@ canvas.addEventListener("pointerdown", (e) => {
 let currentStroke = null;
 
 canvas.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "touch" && activeTouchPoints.has(e.pointerId)) {
+    activeTouchPoints.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  }
+
+  if (pinching) {
+    if (activeTouchPoints.size !== 2) return;
+    const [a, b] = activeTouchPoints.values();
+    const distance = distanceBetween(a, b);
+    const mid = midpointBetween(a, b);
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.clientWidth / rect.width;
+    const scaleY = canvas.clientHeight / rect.height;
+    const cursorX = (mid.x - rect.left) * scaleX;
+    const cursorY = (mid.y - rect.top) * scaleY;
+
+    if (pinchLastDistance > 0) {
+      const zoomFactor = distance / pinchLastDistance;
+      const newScale = Math.max(0.1, Math.min(8, viewScale * zoomFactor));
+      const worldX = (cursorX - viewOffsetX) / viewScale;
+      const worldY = (cursorY - viewOffsetY) / viewScale;
+      viewOffsetX = cursorX - worldX * newScale;
+      viewOffsetY = cursorY - worldY * newScale;
+      viewScale = newScale;
+      redrawCanvas();
+    }
+    pinchLastDistance = distance;
+    return;
+  }
+
   if (e.pointerId !== activePointerId) return;
 
   if (isPanning) {
@@ -2062,6 +2137,14 @@ canvas.addEventListener("pointermove", (e) => {
 });
 
 function finishStroke(e) {
+  if (e && e.pointerType === "touch") {
+    activeTouchPoints.delete(e.pointerId);
+    if (pinching && activeTouchPoints.size < 2) {
+      pinching = false;
+      pinchLastDistance = 0;
+    }
+  }
+
   if (e && e.pointerId !== activePointerId) return;
   activePointerId = null;
 
