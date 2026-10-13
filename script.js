@@ -734,23 +734,21 @@ function currentPenSettings() {
 
 // Arm-pivot offset per pen angle. Not pure trig — hand-tuned to feel right, so only extend
 // this table by eye rather than regenerating it from a formula.
-// Calibrated against a real Apple Pencil on iPad Safari (2026-10-13): at each dial angle, the
-// drawn ink was visibly offset from the physical pencil-tip contact point by some number of
-// ~10px units, measured by the user directly against the glass. Each dial angle indexes this
-// table via its servoBaseAngle-transformed (internal) value, not the dial number itself — e.g.
-// dial 90° measures into the 0° entry below. Fixed: dial 90°→table[0] +20x, dial 0°→table[90]
-// +10y, dial 45°→table[45] +10y, dial 30°→table[60] +20y, dial -30°→table[-60] +10x,
-// dial -45°→table[-45] -20y, dial -60°→table[-30] +20x. (dial 60°/table[30] wasn't measured —
-// left as-is.)
+// Calibrated (two passes, 2026-10-13) against a real Apple Pencil on iPad Safari, by measuring
+// how far the drawn ink lands from the physical pencil-tip contact point at each dial angle.
+// Each dial angle indexes this table via its servoBaseAngle-transformed (internal) value, not
+// the dial number itself — e.g. dial 90° measures into the 0° entry below. If re-measuring,
+// remember that mapping before editing the "wrong" key. table[-45] came from dial -45° only
+// (one pass); every other entry combines both passes.
 const angleOffsets = {
-  90: { x: 0, y: -50 },
-  60: { x: -30, y: -32 },
-  45: { x: -30, y: -40 },
-  30: { x: -52, y: -30 },
+  90: { x: 0, y: -45 },
+  60: { x: -25, y: -32 },
+  45: { x: -30, y: -35 },
+  30: { x: -42, y: -30 },
   0: { x: -40, y: 0 },
-  "-30": { x: -32, y: 30 },
+  "-30": { x: -32, y: 25 },
   "-45": { x: -25, y: 30 },
-  "-60": { x: -20, y: 52 },
+  "-60": { x: -20, y: 47 },
 };
 const knownAngleOffsetKeys = Object.keys(angleOffsets)
   .map(Number)
@@ -2016,14 +2014,20 @@ function screenToWorld(clientX, clientY) {
 // (e.g. a resting palm) starting a stray second stroke while one is already in progress.
 let activePointerId = null;
 
-// Two-finger pinch-to-zoom. Apple Pencil always reports pointerType "pen", never "touch", so
-// this can never be confused with actual drawing. The first finger down is indistinguishable
-// from an ordinary single-touch draw until a second one lands — when it does, whatever
-// single-finger stroke/pan had just started is abandoned (harmless: it's at most one point, so
-// it was never going to be committed anyway) and both fingers switch to pinch tracking instead.
+// Touch is reserved entirely for navigation, never drawing — Apple Pencil always reports
+// pointerType "pen" (handled by the plain single-pointer path below), so a finger is free to
+// mean "move the canvas" the way it does in Procreate: 1 or 3 fingers pan, 2 fingers pinch-zoom,
+// 4+ fingers are ignored. activeTouchPoints tracks every currently-down finger by pointerId;
+// touchMode derives from how many are down right now, and lastTouchCount lets the handlers tell
+// a genuine transition (2 fingers → 3) from just another pointermove at the same count — only a
+// transition should reset the pan anchor / pinch reference distance, or panning would never
+// accumulate (every move would measure a ~zero delta from a freshly-reset anchor).
 const activeTouchPoints = new Map(); // pointerId -> {x, y} in client coordinates
-let pinching = false;
+let touchMode = null; // null | "pan" | "pinch"
+let lastTouchCount = 0;
 let pinchLastDistance = 0;
+let touchPanLastX = 0;
+let touchPanLastY = 0;
 
 function distanceBetween(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -2033,23 +2037,72 @@ function midpointBetween(a, b) {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
 
-canvas.addEventListener("pointerdown", (e) => {
-  if (e.pointerType === "touch") {
-    activeTouchPoints.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (activeTouchPoints.size === 2) {
+function centroidOfPoints(map) {
+  let sx = 0;
+  let sy = 0;
+  map.forEach((p) => {
+    sx += p.x;
+    sy += p.y;
+  });
+  return { x: sx / map.size, y: sy / map.size };
+}
+
+// Re-derives touchMode from activeTouchPoints.size and resets whichever gesture's reference
+// values on an actual count change. Called after every add/remove of a touch pointer.
+function syncTouchGestureMode() {
+  const size = activeTouchPoints.size;
+  const countChanged = size !== lastTouchCount;
+  lastTouchCount = size;
+
+  if (size === 2) {
+    if (touchMode !== "pinch") {
+      // Entering pinch — abandon whatever single-finger draw/pan had just started (at most one
+      // point was ever recorded, so there was nothing to commit anyway).
       isDrawing = false;
       currentStroke = null;
       isPanning = false;
       activePointerId = null;
-      pinching = true;
+    }
+    touchMode = "pinch";
+    if (countChanged) {
       const [a, b] = activeTouchPoints.values();
       pinchLastDistance = distanceBetween(a, b);
-      return;
     }
-    if (activeTouchPoints.size > 2) return; // a third finger — ignore it entirely
+  } else if (size === 1 || size === 3) {
+    if (touchMode !== "pan") {
+      isDrawing = false;
+      currentStroke = null;
+      activePointerId = null;
+    }
+    touchMode = "pan";
+    if (countChanged) {
+      const centroid = centroidOfPoints(activeTouchPoints);
+      touchPanLastX = centroid.x;
+      touchPanLastY = centroid.y;
+    }
+  } else {
+    // 0 fingers, or 4+ (deliberately ignored rather than guessing what they mean).
+    touchMode = null;
+  }
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "touch") {
+    // The pen (or, rarely, a mouse) always wins — while it's actively down, every touch is
+    // treated as a resting palm and ignored outright, rather than hijacking into a pan/pinch
+    // gesture out from under an in-progress stroke.
+    if (activePointerId !== null) return;
+    activeTouchPoints.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    syncTouchGestureMode();
+    return;
   }
 
-  if (pinching || activePointerId !== null) return;
+  if (activePointerId !== null) return;
+  // A non-touch pointer (pen/mouse) always takes over, even mid pan/pinch gesture — drop
+  // whatever fingers are currently tracked so they don't keep panning underneath it.
+  activeTouchPoints.clear();
+  touchMode = null;
+  lastTouchCount = 0;
   activePointerId = e.pointerId;
   try {
     canvas.setPointerCapture(e.pointerId);
@@ -2089,7 +2142,7 @@ canvas.addEventListener("pointermove", (e) => {
     activeTouchPoints.set(e.pointerId, { x: e.clientX, y: e.clientY });
   }
 
-  if (pinching) {
+  if (touchMode === "pinch") {
     if (activeTouchPoints.size !== 2) return;
     const [a, b] = activeTouchPoints.values();
     const distance = distanceBetween(a, b);
@@ -2112,6 +2165,16 @@ canvas.addEventListener("pointermove", (e) => {
       redrawCanvas();
     }
     pinchLastDistance = distance;
+    return;
+  }
+
+  if (touchMode === "pan") {
+    const centroid = centroidOfPoints(activeTouchPoints);
+    viewOffsetX += centroid.x - touchPanLastX;
+    viewOffsetY += centroid.y - touchPanLastY;
+    touchPanLastX = centroid.x;
+    touchPanLastY = centroid.y;
+    redrawCanvas();
     return;
   }
 
@@ -2139,10 +2202,8 @@ canvas.addEventListener("pointermove", (e) => {
 function finishStroke(e) {
   if (e && e.pointerType === "touch") {
     activeTouchPoints.delete(e.pointerId);
-    if (pinching && activeTouchPoints.size < 2) {
-      pinching = false;
-      pinchLastDistance = 0;
-    }
+    syncTouchGestureMode();
+    return;
   }
 
   if (e && e.pointerId !== activePointerId) return;
