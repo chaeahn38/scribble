@@ -2000,7 +2000,19 @@ function screenToWorld(clientX, clientY) {
   return { x: (screenX - viewOffsetX) / viewScale, y: (screenY - viewOffsetY) / viewScale };
 }
 
-canvas.addEventListener("mousedown", (e) => {
+// Pointer Events (not mouse events) so this works with Apple Pencil on iPad Safari — Safari
+// doesn't reliably synthesize mouse events for a pencil/touch drag, but it does dispatch proper
+// pointer events for mouse, pen, and touch alike. setPointerCapture keeps move/up events
+// targeted at the canvas even if the pointer drifts outside its bounds mid-stroke, which also
+// replaces the old mouseleave-based fallback. activePointerId guards against a second touch
+// (e.g. a resting palm) starting a stray second stroke while one is already in progress.
+let activePointerId = null;
+
+canvas.addEventListener("pointerdown", (e) => {
+  if (activePointerId !== null) return;
+  activePointerId = e.pointerId;
+  canvas.setPointerCapture(e.pointerId);
+
   if (spacePanning) {
     isPanning = true;
     panStartClientX = e.clientX;
@@ -2027,7 +2039,9 @@ canvas.addEventListener("mousedown", (e) => {
 
 let currentStroke = null;
 
-canvas.addEventListener("mousemove", (e) => {
+canvas.addEventListener("pointermove", (e) => {
+  if (e.pointerId !== activePointerId) return;
+
   if (isPanning) {
     viewOffsetX = panStartOffsetX + (e.clientX - panStartClientX);
     viewOffsetY = panStartOffsetY + (e.clientY - panStartClientY);
@@ -2047,7 +2061,10 @@ canvas.addEventListener("mousemove", (e) => {
   lastY = currentY;
 });
 
-function finishStroke() {
+function finishStroke(e) {
+  if (e && e.pointerId !== activePointerId) return;
+  activePointerId = null;
+
   if (isPanning) {
     isPanning = false;
     canvas.style.cursor = spacePanning ? "grab" : "crosshair";
@@ -2063,8 +2080,8 @@ function finishStroke() {
   currentStroke = null;
 }
 
-canvas.addEventListener("mouseup", finishStroke);
-canvas.addEventListener("mouseleave", finishStroke);
+canvas.addEventListener("pointerup", finishStroke);
+canvas.addEventListener("pointercancel", finishStroke);
 
 function redrawCanvas() {
   setCanvasBackground();

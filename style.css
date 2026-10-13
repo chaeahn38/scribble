@@ -1028,6 +1028,13 @@ button {
   min-height: 0;
   background-color: #fff;
   cursor: crosshair;
+  /* Without this, iOS/iPadOS Safari treats a pencil or finger drag as a page-scroll/zoom
+     gesture and never hands the sustained move events to JS — this is what actually breaks
+     Apple Pencil input, not just a pointer-events-vs-mouse-events issue. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 @media (max-width: 900px) {
