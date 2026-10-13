@@ -95,6 +95,7 @@
                   max="1"
                   step="any"
                   value="0.5"
+                  inputmode="decimal"
                 />
                 <span class="stepper-suffix">×</span>
                 <div class="stepper-arrows">
@@ -107,7 +108,7 @@
             <div class="control-row">
               <label for="angleInput">Angle</label>
               <div class="pill stepper angle-input-pill">
-                <input type="number" id="angleInput" value="45" step="1" min="-180" max="180" />
+                <input type="number" id="angleInput" value="45" step="1" min="-180" max="180" inputmode="decimal" />
                 <span class="stepper-suffix">°</span>
               </div>
             </div>
@@ -158,9 +159,9 @@
               />
 
               <div class="rgb-inputs" id="rgbInputs" hidden>
-                <input type="number" class="pill rgb-input" id="redInput" min="0" max="255" value="0" aria-label="Red" />
-                <input type="number" class="pill rgb-input" id="greenInput" min="0" max="255" value="0" aria-label="Green" />
-                <input type="number" class="pill rgb-input" id="blueInput" min="0" max="255" value="0" aria-label="Blue" />
+                <input type="number" class="pill rgb-input" id="redInput" min="0" max="255" value="0" aria-label="Red" inputmode="numeric" />
+                <input type="number" class="pill rgb-input" id="greenInput" min="0" max="255" value="0" aria-label="Green" inputmode="numeric" />
+                <input type="number" class="pill rgb-input" id="blueInput" min="0" max="255" value="0" aria-label="Blue" inputmode="numeric" />
               </div>
 
               <input
@@ -195,6 +196,7 @@
                 max="5"
                 step="1"
                 value="1"
+                inputmode="numeric"
               />
             </div>
 
