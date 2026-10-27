@@ -933,6 +933,15 @@ function sampleArcPoints(cx, cy, rotation, radius, archSpan = ARC_SPAN, segments
 // overlapping itself, stepping outward a little each time. Thickness also ramps linearly across
 // the repeats, from half `baseThickness` up to one-and-a-half times it, so the stack reads as a
 // subtle thin-to-thick set rather than N identical-weight lines on top of each other.
+// Deterministic pseudo-random value in [0, 1) seeded by (x, y, i) — a classic sine-hash. Used
+// instead of Math.random() so a stroke's jitter is stable across redraws (pan/zoom/undo all
+// re-invoke drawStrokeToContext) while still varying per stamp position and per repeat index,
+// since those are exactly the two things the seed is built from.
+function pseudoRandom(x, y, i) {
+  const n = Math.sin(x * 12.9898 + y * 78.233 + i * 37.719) * 43758.5453;
+  return n - Math.floor(n);
+}
+
 function forEachFanArc(cx, cy, rotation, baseRadius, repeats, baseThickness, callback) {
   const midAngle = rotation + ARC_SPAN / 2;
   const stepX = Math.cos(midAngle) * (baseRadius / repeats);
@@ -942,7 +951,9 @@ function forEachFanArc(cx, cy, rotation, baseRadius, repeats, baseThickness, cal
   for (let i = 0; i < repeats; i++) {
     const px = cx + stepX * i;
     const py = cy + stepY * i;
-    const thickness = repeats > 1 ? minThickness + ((maxThickness - minThickness) * i) / (repeats - 1) : baseThickness;
+    // Each repeat's thickness is its own independent draw from [min, max] — no thin-to-thick
+    // order, just scattered, and a different scatter for every stamp along the path.
+    const thickness = minThickness + pseudoRandom(cx, cy, i) * (maxThickness - minThickness);
     callback(sampleArcPoints(px, py, rotation, baseRadius, ARC_SPAN), thickness);
   }
 }
