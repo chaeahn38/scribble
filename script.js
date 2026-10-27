@@ -927,14 +927,18 @@ function sampleArcPoints(cx, cy, rotation, radius, archSpan = ARC_SPAN, segments
   return points;
 }
 
-// One stamp = `repeats` concentric arcs sharing the same pivot and the same angular span —
-// a rainbow: every band spans the same angle, just at a different radius, so they read as
-// consistent repeats rather than growing or shrinking. Radii are evenly spaced from
-// baseRadius/repeats out to baseRadius.
+// One stamp = the exact same arc (radius and angular span both fixed) repeated `repeats` times,
+// each copy's pivot nudged by one more constant step along the arc's own outward (mid-angle)
+// direction — not concentric rings of growing radius, just one identical layer stacked and
+// overlapping itself, stepping outward a little each time.
 function forEachFanArc(cx, cy, rotation, baseRadius, repeats, callback) {
-  for (let i = 1; i <= repeats; i++) {
-    const radius = (baseRadius * i) / repeats;
-    callback(sampleArcPoints(cx, cy, rotation, radius, ARC_SPAN));
+  const midAngle = rotation + ARC_SPAN / 2;
+  const stepX = Math.cos(midAngle) * (baseRadius / repeats);
+  const stepY = Math.sin(midAngle) * (baseRadius / repeats);
+  for (let i = 0; i < repeats; i++) {
+    const px = cx + stepX * i;
+    const py = cy + stepY * i;
+    callback(sampleArcPoints(px, py, rotation, baseRadius, ARC_SPAN));
   }
 }
 
