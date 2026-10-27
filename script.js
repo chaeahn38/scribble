@@ -930,15 +930,20 @@ function sampleArcPoints(cx, cy, rotation, radius, archSpan = ARC_SPAN, segments
 // One stamp = the exact same arc (radius and angular span both fixed) repeated `repeats` times,
 // each copy's pivot nudged by one more constant step along the arc's own outward (mid-angle)
 // direction — not concentric rings of growing radius, just one identical layer stacked and
-// overlapping itself, stepping outward a little each time.
-function forEachFanArc(cx, cy, rotation, baseRadius, repeats, callback) {
+// overlapping itself, stepping outward a little each time. Thickness also ramps linearly across
+// the repeats, from half `baseThickness` up to one-and-a-half times it, so the stack reads as a
+// subtle thin-to-thick set rather than N identical-weight lines on top of each other.
+function forEachFanArc(cx, cy, rotation, baseRadius, repeats, baseThickness, callback) {
   const midAngle = rotation + ARC_SPAN / 2;
   const stepX = Math.cos(midAngle) * (baseRadius / repeats);
   const stepY = Math.sin(midAngle) * (baseRadius / repeats);
+  const minThickness = baseThickness * 0.5;
+  const maxThickness = baseThickness * 1.5;
   for (let i = 0; i < repeats; i++) {
     const px = cx + stepX * i;
     const py = cy + stepY * i;
-    callback(sampleArcPoints(px, py, rotation, baseRadius, ARC_SPAN));
+    const thickness = repeats > 1 ? minThickness + ((maxThickness - minThickness) * i) / (repeats - 1) : baseThickness;
+    callback(sampleArcPoints(px, py, rotation, baseRadius, ARC_SPAN), thickness);
   }
 }
 
@@ -987,7 +992,7 @@ function computeStrokePenBounds(stroke) {
   let maxY = -Infinity;
 
   walkCrescentStamps(stroke, (cx, cy, r) => {
-    forEachFanArc(cx, cy, rotation, r, settings.arcRepeats, (points) => {
+    forEachFanArc(cx, cy, rotation, r, settings.arcRepeats, settings.arcThickness, (points) => {
       points.forEach((p) => {
         if (p.x < minX) minX = p.x;
         if (p.x > maxX) maxX = p.x;
@@ -1671,7 +1676,8 @@ function computeStrokeLength(points) {
 }
 
 
-function strokeFanArc(targetCtx, points) {
+function strokeFanArc(targetCtx, points, thickness) {
+  targetCtx.lineWidth = thickness;
   targetCtx.beginPath();
   targetCtx.moveTo(points[0].x, points[0].y);
   for (let i = 1; i < points.length; i++) targetCtx.lineTo(points[i].x, points[i].y);
@@ -1684,12 +1690,13 @@ function drawStrokeToContext(targetCtx, stroke) {
   const settings = stroke.settings;
   const rotation = (settings.baseAngle * Math.PI) / 180;
   targetCtx.strokeStyle = settings.color;
-  targetCtx.lineWidth = settings.arcThickness;
   targetCtx.lineCap = "round";
   targetCtx.lineJoin = "round";
 
   walkCrescentStamps(stroke, (cx, cy, r) => {
-    forEachFanArc(cx, cy, rotation, r, settings.arcRepeats, (points) => strokeFanArc(targetCtx, points));
+    forEachFanArc(cx, cy, rotation, r, settings.arcRepeats, settings.arcThickness, (points, thickness) =>
+      strokeFanArc(targetCtx, points, thickness),
+    );
   });
 }
 
@@ -1710,7 +1717,6 @@ function drawLiveSegment(x1, y1, x2, y2) {
   const uy = (y2 - y1) / segLength;
 
   ctx.strokeStyle = settings.color;
-  ctx.lineWidth = settings.arcThickness;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
@@ -1718,7 +1724,9 @@ function drawLiveSegment(x1, y1, x2, y2) {
     const distIntoSeg = nextStampDistance - totalDistance;
     const sx = x1 + ux * distIntoSeg;
     const sy = y1 + uy * distIntoSeg;
-    forEachFanArc(sx, sy, rotation, baseRadius, settings.arcRepeats, (points) => strokeFanArc(ctx, points));
+    forEachFanArc(sx, sy, rotation, baseRadius, settings.arcRepeats, settings.arcThickness, (points, thickness) =>
+      strokeFanArc(ctx, points, thickness),
+    );
     nextStampDistance += spacing;
   }
 
@@ -1994,10 +2002,10 @@ function buildSvgPathsForStroke(stroke) {
   const paths = [];
 
   walkCrescentStamps(stroke, (cx, cy, r) => {
-    forEachFanArc(cx, cy, rotation, r, settings.arcRepeats, (points) => {
+    forEachFanArc(cx, cy, rotation, r, settings.arcRepeats, settings.arcThickness, (points, thickness) => {
       const d = `M ${points.map((p) => `${p.x} ${p.y}`).join(" L ")}`;
       paths.push(
-        `<path d="${d}" fill="none" stroke="${settings.color}" stroke-width="${settings.arcThickness}" stroke-linecap="round" stroke-linejoin="round" />`,
+        `<path d="${d}" fill="none" stroke="${settings.color}" stroke-width="${thickness}" stroke-linecap="round" stroke-linejoin="round" />`,
       );
     });
   });
