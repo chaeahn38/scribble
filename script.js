@@ -638,14 +638,15 @@ let lastX = 0;
 let lastY = 0;
 let totalDistance = 0;
 
-let lineWidth = 1;
-// Repurposed from the old oscillating-arm length into the base size (radius) of each stamped
-// crescent mark — kept under the same name/pen-preset wiring since the 5 "Pen" thickness
+// Repurposed from the old oscillating-arm length into the base size (outer radius) of each
+// stamped arc-fan — kept under the same name/pen-preset wiring since the 5 "Pen" thickness
 // buttons already set this via the same data-arm attribute.
 let armLength = 40;
 let speed = 0.5;
 let baseAngle = 45;
 let widthProfile = 0; // 0 (uniform) .. 1 (full taper to a point by the stroke's end)
+let arcRepeats = 5; // how many concentric monoline arcs are nested in each stamp
+let arcThickness = 1.5; // stroke width of each individual arc (constant — "monoline")
 
 // Canvas paper/ink color defaults follow the effective dark/light mode — black paper with
 // white ink in dark mode, white paper with black ink in light mode (matches the app chrome,
@@ -706,11 +707,12 @@ prefersDarkQuery.addEventListener("change", () => {
 
 function currentPenSettings() {
   return {
-    lineWidth,
     armLength,
     speed,
     baseAngle,
     widthProfile,
+    arcRepeats,
+    arcThickness,
     color: currentColor,
   };
 }
@@ -904,41 +906,34 @@ function verticesToStrokePoints(vertices) {
   return points;
 }
 
-// Mirrors drawStrokeToContext's pen-tip geometry without actually drawing, so the caller can
-// find out where a stroke really ends up (arm offset included) before committing it to canvas.
 // ----------------------------------------------------------------------------
-// Crescent stamp pen — repeats one tapered claw/crescent mark along the drawn
-// path, at a fixed angle, the way a row of overlapping brush "flicks" would.
-// Replaced the old oscillating-servo-arm Zig/Arc/Solid/Invert system entirely.
+// Arc-fan stamp pen — repeats a small fan of concentric monoline (constant-width)
+// half-arcs along the drawn path, at a fixed angle, the way a row of overlapping
+// brush flicks would. Replaced the old oscillating-servo-arm Zig/Arc/Solid/Invert
+// system entirely.
 // ----------------------------------------------------------------------------
 
-const CRESCENT_ARC_SPAN = (100 * Math.PI) / 180;
+const ARC_SPAN = (100 * Math.PI) / 180;
 
-// One crescent: a circular spine of `baseRadius`, swept through `archSpan` starting at the
-// pivot (cx,cy) and rotated by `rotation`. Width starts at 0 at the pivot end (a sharp point)
-// and grows to `maxWidth` at the far end (t^0.8 easing — widens quickly, like a flicked brush),
-// built as two concentric arcs (outer = baseRadius + width/2, inner = baseRadius - width/2)
-// joined into one closed polygon.
-function buildCrescentPolygon(cx, cy, rotation, baseRadius, maxWidth, archSpan = CRESCENT_ARC_SPAN, segments = 14) {
-  const cos = Math.cos(rotation);
-  const sin = Math.sin(rotation);
-  const outer = [];
-  const inner = [];
-
+// Samples one circular arc of `radius`, swept through `archSpan` starting at the pivot
+// (cx,cy) and rotated by `rotation`, into a short polyline — used for both drawing (canvas
+// moveTo/lineTo, SVG "M...L...") and bounding-box math, so all three stay in exact agreement.
+function sampleArcPoints(cx, cy, rotation, radius, archSpan = ARC_SPAN, segments = 12) {
+  const points = [];
   for (let i = 0; i <= segments; i++) {
-    const t = i / segments;
-    const theta = t * archSpan;
-    const width = maxWidth * Math.pow(t, 0.8);
-    const rOuter = baseRadius + width / 2;
-    const rInner = Math.max(0, baseRadius - width / 2);
-    const cosT = Math.cos(theta);
-    const sinT = Math.sin(theta);
-    outer.push({ x: cx + (cosT * rOuter * cos - sinT * rOuter * sin), y: cy + (cosT * rOuter * sin + sinT * rOuter * cos) });
-    inner.push({ x: cx + (cosT * rInner * cos - sinT * rInner * sin), y: cy + (cosT * rInner * sin + sinT * rInner * cos) });
+    const theta = rotation + (i / segments) * archSpan;
+    points.push({ x: cx + Math.cos(theta) * radius, y: cy + Math.sin(theta) * radius });
   }
+  return points;
+}
 
-  inner.reverse();
-  return outer.concat(inner);
+// One stamp = `repeats` concentric arcs sharing the same pivot and angular span, radii evenly
+// spaced from baseRadius/repeats out to baseRadius — the nested-fan texture from the reference
+// photo. Calls back once per arc with its sampled points.
+function forEachFanArc(cx, cy, rotation, baseRadius, repeats, callback) {
+  for (let i = 1; i <= repeats; i++) {
+    callback(sampleArcPoints(cx, cy, rotation, (baseRadius * i) / repeats));
+  }
 }
 
 // Walks a stroke's recorded path at a constant arc-length spacing (density-controlled — higher
@@ -975,10 +970,8 @@ function walkCrescentStamps(stroke, callback) {
   });
 }
 
-function crescentMaxWidth(settings, radius) {
-  return radius * (0.35 + settings.lineWidth * 0.15);
-}
-
+// Mirrors drawStrokeToContext's geometry without actually drawing, so the caller can find out
+// where a stroke really ends up before committing it to canvas (used to auto-center the preview).
 function computeStrokePenBounds(stroke) {
   const settings = stroke.settings;
   const rotation = (settings.baseAngle * Math.PI) / 180;
@@ -988,12 +981,13 @@ function computeStrokePenBounds(stroke) {
   let maxY = -Infinity;
 
   walkCrescentStamps(stroke, (cx, cy, r) => {
-    const poly = buildCrescentPolygon(cx, cy, rotation, r, crescentMaxWidth(settings, r));
-    poly.forEach((p) => {
-      if (p.x < minX) minX = p.x;
-      if (p.x > maxX) maxX = p.x;
-      if (p.y < minY) minY = p.y;
-      if (p.y > maxY) maxY = p.y;
+    forEachFanArc(cx, cy, rotation, r, settings.arcRepeats, (points) => {
+      points.forEach((p) => {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      });
     });
   });
 
@@ -1274,18 +1268,11 @@ document.addEventListener("click", (event) => {
 updateColorFromHsva();
 
 // ============================================================================
-// Weight / Width Profile
+// Width Profile
 // ============================================================================
 
-const weightInput = document.getElementById("weightInput");
 const widthProfileInput = document.getElementById("widthProfileInput");
 const widthProfilePreview = document.getElementById("widthProfilePreview");
-
-weightInput?.addEventListener("input", () => {
-  const parsed = parseInt(weightInput.value, 10);
-  lineWidth = isFinite(parsed) ? Math.max(1, Math.min(5, parsed)) : lineWidth;
-  renderPreview();
-});
 
 function updateWidthProfilePreview() {
   if (!widthProfilePreview) return;
@@ -1468,6 +1455,44 @@ if (anglePickerSvg) {
 }
 
 // ============================================================================
+// Repeats (arcs per stamp) / Thickness (monoline stroke width)
+// ============================================================================
+
+const repeatsInput = document.getElementById("repeatsInput");
+const repeatsUpBtn = document.getElementById("repeatsUpBtn");
+const repeatsDownBtn = document.getElementById("repeatsDownBtn");
+
+function setRepeats(next) {
+  arcRepeats = Math.round(Math.max(1, Math.min(12, next)));
+  if (repeatsInput) repeatsInput.value = arcRepeats;
+  renderPreview();
+}
+
+repeatsInput?.addEventListener("change", () => {
+  const parsed = parseInt(repeatsInput.value, 10);
+  if (isFinite(parsed)) setRepeats(parsed);
+});
+repeatsUpBtn?.addEventListener("click", () => setRepeats(arcRepeats + 1));
+repeatsDownBtn?.addEventListener("click", () => setRepeats(arcRepeats - 1));
+
+const thicknessInput = document.getElementById("thicknessInput");
+const thicknessUpBtn = document.getElementById("thicknessUpBtn");
+const thicknessDownBtn = document.getElementById("thicknessDownBtn");
+
+function setThickness(next) {
+  arcThickness = Math.round(Math.max(0.5, Math.min(6, next)) * 10) / 10;
+  if (thicknessInput) thicknessInput.value = arcThickness;
+  renderPreview();
+}
+
+thicknessInput?.addEventListener("change", () => {
+  const parsed = parseFloat(thicknessInput.value);
+  if (isFinite(parsed)) setThickness(parsed);
+});
+thicknessUpBtn?.addEventListener("click", () => setThickness(arcThickness + 0.5));
+thicknessDownBtn?.addEventListener("click", () => setThickness(arcThickness - 0.5));
+
+// ============================================================================
 // Sidebar footer: info modal, collapse
 // ============================================================================
 
@@ -1640,24 +1665,29 @@ function computeStrokeLength(points) {
 }
 
 
+function strokeFanArc(targetCtx, points) {
+  targetCtx.beginPath();
+  targetCtx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) targetCtx.lineTo(points[i].x, points[i].y);
+  targetCtx.stroke();
+}
+
 // Draws one stored stroke (freehand or font-derived) onto a canvas context as a row of
-// overlapping crescent stamps. Shared by the main canvas redraw, PNG export, and JPG export.
+// overlapping arc-fan stamps. Shared by the main canvas redraw, PNG export, and JPG export.
 function drawStrokeToContext(targetCtx, stroke) {
   const settings = stroke.settings;
   const rotation = (settings.baseAngle * Math.PI) / 180;
-  targetCtx.fillStyle = settings.color;
+  targetCtx.strokeStyle = settings.color;
+  targetCtx.lineWidth = settings.arcThickness;
+  targetCtx.lineCap = "round";
+  targetCtx.lineJoin = "round";
 
   walkCrescentStamps(stroke, (cx, cy, r) => {
-    const poly = buildCrescentPolygon(cx, cy, rotation, r, crescentMaxWidth(settings, r));
-    targetCtx.beginPath();
-    targetCtx.moveTo(poly[0].x, poly[0].y);
-    for (let i = 1; i < poly.length; i++) targetCtx.lineTo(poly[i].x, poly[i].y);
-    targetCtx.closePath();
-    targetCtx.fill();
+    forEachFanArc(cx, cy, rotation, r, settings.arcRepeats, (points) => strokeFanArc(targetCtx, points));
   });
 }
 
-// Live in-progress stroke (during mousemove): stamps crescents as the pointer moves, at the
+// Live in-progress stroke (during mousemove): stamps the arc fan as the pointer moves, at the
 // stroke's starting (untapered) size — the Width Profile taper needs the stroke's full length,
 // which isn't known until the pointer is released, same reasoning the old renderer used.
 let nextStampDistance = 0;
@@ -1666,7 +1696,6 @@ function drawLiveSegment(x1, y1, x2, y2) {
   const settings = currentPenSettings();
   const rotation = (settings.baseAngle * Math.PI) / 180;
   const baseRadius = settings.armLength;
-  const maxWidth = crescentMaxWidth(settings, baseRadius);
   const spacing = Math.max(4, baseRadius * 0.55) / settings.speed;
 
   const segLength = Math.hypot(x2 - x1, y2 - y1);
@@ -1674,18 +1703,16 @@ function drawLiveSegment(x1, y1, x2, y2) {
   const ux = (x2 - x1) / segLength;
   const uy = (y2 - y1) / segLength;
 
-  ctx.fillStyle = settings.color;
+  ctx.strokeStyle = settings.color;
+  ctx.lineWidth = settings.arcThickness;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
 
   while (nextStampDistance <= totalDistance + segLength) {
     const distIntoSeg = nextStampDistance - totalDistance;
     const sx = x1 + ux * distIntoSeg;
     const sy = y1 + uy * distIntoSeg;
-    const poly = buildCrescentPolygon(sx, sy, rotation, baseRadius, maxWidth);
-    ctx.beginPath();
-    ctx.moveTo(poly[0].x, poly[0].y);
-    for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
-    ctx.closePath();
-    ctx.fill();
+    forEachFanArc(sx, sy, rotation, baseRadius, settings.arcRepeats, (points) => strokeFanArc(ctx, points));
     nextStampDistance += spacing;
   }
 
@@ -1961,9 +1988,12 @@ function buildSvgPathsForStroke(stroke) {
   const paths = [];
 
   walkCrescentStamps(stroke, (cx, cy, r) => {
-    const poly = buildCrescentPolygon(cx, cy, rotation, r, crescentMaxWidth(settings, r));
-    const d = `M ${poly.map((p) => `${p.x} ${p.y}`).join(" L ")} Z`;
-    paths.push(`<path d="${d}" fill="${settings.color}" stroke="none" />`);
+    forEachFanArc(cx, cy, rotation, r, settings.arcRepeats, (points) => {
+      const d = `M ${points.map((p) => `${p.x} ${p.y}`).join(" L ")}`;
+      paths.push(
+        `<path d="${d}" fill="none" stroke="${settings.color}" stroke-width="${settings.arcThickness}" stroke-linecap="round" stroke-linejoin="round" />`,
+      );
+    });
   });
 
   return paths;

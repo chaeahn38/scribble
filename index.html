@@ -97,6 +97,28 @@
               ></svg>
             </div>
 
+            <div class="control-row">
+              <label for="repeatsInput">Repeats</label>
+              <div class="pill stepper">
+                <input type="number" id="repeatsInput" min="1" max="12" step="1" value="5" inputmode="numeric" />
+                <div class="stepper-arrows">
+                  <button type="button" class="stepper-up" id="repeatsUpBtn" aria-label="Increase repeats">▲</button>
+                  <button type="button" class="stepper-down" id="repeatsDownBtn" aria-label="Decrease repeats">▼</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="control-row">
+              <label for="thicknessInput">Thickness</label>
+              <div class="pill stepper">
+                <input type="number" id="thicknessInput" min="0.5" max="6" step="0.5" value="1.5" inputmode="decimal" />
+                <div class="stepper-arrows">
+                  <button type="button" class="stepper-up" id="thicknessUpBtn" aria-label="Increase thickness">▲</button>
+                  <button type="button" class="stepper-down" id="thicknessDownBtn" aria-label="Decrease thickness">▼</button>
+                </div>
+              </div>
+            </div>
+
             <div class="preview-box">
               <canvas id="previewCanvas" width="264" height="150"></canvas>
             </div>
@@ -158,20 +180,6 @@
             <div class="track-slider alpha-slider" id="alphaSlider">
               <div class="alpha-slider-fill" id="alphaSliderFill"></div>
               <div class="track-thumb" id="alphaThumb"></div>
-            </div>
-
-            <div class="control-row">
-              <label for="weightInput">Weight</label>
-              <input
-                type="number"
-                class="pill number-input"
-                id="weightInput"
-                min="1"
-                max="5"
-                step="1"
-                value="1"
-                inputmode="numeric"
-              />
             </div>
 
             <div class="control-row">
