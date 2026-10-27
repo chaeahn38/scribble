@@ -927,16 +927,14 @@ function sampleArcPoints(cx, cy, rotation, radius, archSpan = ARC_SPAN, segments
   return points;
 }
 
-// One stamp = `repeats` concentric arcs sharing the same pivot, radii evenly spaced from
-// baseRadius/repeats out to baseRadius. Each ring also sweeps a different angular span — the
-// innermost is the shortest (a stub) and the outermost gets the full ARC_SPAN — rather than
-// every ring sharing one span, which traced the same wedge at every radius and read as
-// concentric rings (a Wi-Fi icon) instead of a layered feather/flick fan.
+// One stamp = `repeats` concentric arcs sharing the same pivot and the same angular span —
+// a rainbow: every band spans the same angle, just at a different radius, so they read as
+// consistent repeats rather than growing or shrinking. Radii are evenly spaced from
+// baseRadius/repeats out to baseRadius.
 function forEachFanArc(cx, cy, rotation, baseRadius, repeats, callback) {
   for (let i = 1; i <= repeats; i++) {
     const radius = (baseRadius * i) / repeats;
-    const span = (ARC_SPAN * i) / repeats;
-    callback(sampleArcPoints(cx, cy, rotation, radius, span));
+    callback(sampleArcPoints(cx, cy, rotation, radius, ARC_SPAN));
   }
 }
 
