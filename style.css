@@ -446,14 +446,9 @@ button {
 
 /* ---------- Stroke: weight / style / width profile ---------- */
 
-.number-input,
-.select-input {
-  cursor: pointer;
-  text-align: left;
-}
-
 .number-input {
   cursor: text;
+  text-align: left;
 }
 
 .width-profile-pill {
@@ -487,54 +482,6 @@ button {
 }
 
 /* ---------- Pen section ---------- */
-
-.draw-mode-row {
-  display: flex;
-  background: var(--gray-200);
-  border-radius: 8px;
-  padding: 5px;
-  gap: 3px;
-  margin-bottom: 8px;
-}
-
-.draw-mode-btn {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 7px 4px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  cursor: pointer;
-  color: var(--text-primary);
-  font-size: 0.6rem;
-}
-
-.draw-mode-btn:hover {
-  background: rgba(0, 0, 0, 0.05);
-}
-
-.draw-mode-btn.active {
-  background: var(--gray-300);
-}
-
-.draw-mode-icon {
-  width: 28px;
-  height: 14px;
-  display: block;
-  color: var(--text-primary);
-}
-
-.draw-mode-solid-swatch {
-  width: 22px;
-  height: 12px;
-  background: var(--text-primary);
-  border-radius: 2px;
-  display: block;
-}
 
 .pen-preset-row {
   display: flex;

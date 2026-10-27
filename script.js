@@ -639,17 +639,13 @@ let lastY = 0;
 let totalDistance = 0;
 
 let lineWidth = 1;
+// Repurposed from the old oscillating-arm length into the base size (radius) of each stamped
+// crescent mark — kept under the same name/pen-preset wiring since the 5 "Pen" thickness
+// buttons already set this via the same data-arm attribute.
 let armLength = 40;
-let angleRange = 60;
 let speed = 0.5;
 let baseAngle = 45;
-let strokeStyle = "solid"; // "solid" | "dashed" | "dotted"
 let widthProfile = 0; // 0 (uniform) .. 1 (full taper to a point by the stroke's end)
-let drawMode = "arc"; // "zig" | "arc" | "solid" — how the oscillation path itself is rendered
-// Independent boolean, not part of the Zig/Arc/Solid group: only affects Solid's broad-nib edge
-// direction (the default is the correct calligraphy orientation — thin where travel runs along
-// the nib edge, thick across it — Invert swaps to the edge-along-baseAngle orientation instead).
-let invertNib = false;
 
 // Canvas paper/ink color defaults follow the effective dark/light mode — black paper with
 // white ink in dark mode, white paper with black ink in light mode (matches the app chrome,
@@ -708,71 +704,15 @@ prefersDarkQuery.addEventListener("change", () => {
   applyEffectiveThemeToCanvasColors();
 });
 
-// The angle dial labels a pick by how far it leans from horizontal, but the pen's own oscillation
-// math measures baseAngle from the complementary axis — so "30°" was rendering the shape "60°"
-// should, and vice versa (0°/90° and 30°/60° swap; 45°/-45° are their own mirror). Reflecting once
-// here, when a stroke's settings are captured, fixes the mismatch without touching how the dial
-// itself displays or picks angles.
-function servoBaseAngle(angle) {
-  return angle >= 0 ? 90 - angle : -90 - angle;
-}
-
 function currentPenSettings() {
   return {
     lineWidth,
     armLength,
-    angleRange,
     speed,
-    baseAngle: servoBaseAngle(baseAngle),
-    style: strokeStyle,
+    baseAngle,
     widthProfile,
     color: currentColor,
-    drawMode,
-    invertNib,
   };
-}
-
-// Arm-pivot offset per pen angle. Not pure trig — hand-tuned to feel right, so only extend
-// this table by eye rather than regenerating it from a formula.
-// Calibrated (two passes, 2026-10-13) against a real Apple Pencil on iPad Safari, by measuring
-// how far the drawn ink lands from the physical pencil-tip contact point at each dial angle.
-// Each dial angle indexes this table via its servoBaseAngle-transformed (internal) value, not
-// the dial number itself — e.g. dial 90° measures into the 0° entry below. If re-measuring,
-// remember that mapping before editing the "wrong" key. table[-45] came from dial -45° only
-// (one pass); every other entry combines both passes.
-const angleOffsets = {
-  90: { x: 0, y: -45 },
-  60: { x: -25, y: -32 },
-  45: { x: -30, y: -35 },
-  30: { x: -42, y: -30 },
-  0: { x: -40, y: 0 },
-  "-30": { x: -32, y: 25 },
-  "-45": { x: -25, y: 30 },
-  "-60": { x: -20, y: 47 },
-};
-const knownAngleOffsetKeys = Object.keys(angleOffsets)
-  .map(Number)
-  .sort((a, b) => a - b);
-
-// Typing a custom angle (e.g. 56°) won't hit one of the 8 hand-tuned entries above, so this
-// linearly interpolates between the two nearest known angles instead of jumping to {0,0} —
-// matches exactly at the 8 anchor points and blends smoothly in between.
-function getAngleOffset(angle) {
-  const keys = knownAngleOffsetKeys;
-  if (angle <= keys[0]) return angleOffsets[keys[0]];
-  if (angle >= keys[keys.length - 1]) return angleOffsets[keys[keys.length - 1]];
-
-  for (let i = 0; i < keys.length - 1; i++) {
-    const a0 = keys[i];
-    const a1 = keys[i + 1];
-    if (angle >= a0 && angle <= a1) {
-      const t = (angle - a0) / (a1 - a0);
-      const o0 = angleOffsets[a0];
-      const o1 = angleOffsets[a1];
-      return { x: o0.x + (o1.x - o0.x) * t, y: o0.y + (o1.y - o0.y) * t };
-    }
-  }
-  return { x: 0, y: 0 };
 }
 
 // The 8 selectable pen angle magnitudes, in the exact left-to-right order the fan picker
@@ -966,37 +906,98 @@ function verticesToStrokePoints(vertices) {
 
 // Mirrors drawStrokeToContext's pen-tip geometry without actually drawing, so the caller can
 // find out where a stroke really ends up (arm offset included) before committing it to canvas.
+// ----------------------------------------------------------------------------
+// Crescent stamp pen — repeats one tapered claw/crescent mark along the drawn
+// path, at a fixed angle, the way a row of overlapping brush "flicks" would.
+// Replaced the old oscillating-servo-arm Zig/Arc/Solid/Invert system entirely.
+// ----------------------------------------------------------------------------
+
+const CRESCENT_ARC_SPAN = (100 * Math.PI) / 180;
+
+// One crescent: a circular spine of `baseRadius`, swept through `archSpan` starting at the
+// pivot (cx,cy) and rotated by `rotation`. Width starts at 0 at the pivot end (a sharp point)
+// and grows to `maxWidth` at the far end (t^0.8 easing — widens quickly, like a flicked brush),
+// built as two concentric arcs (outer = baseRadius + width/2, inner = baseRadius - width/2)
+// joined into one closed polygon.
+function buildCrescentPolygon(cx, cy, rotation, baseRadius, maxWidth, archSpan = CRESCENT_ARC_SPAN, segments = 14) {
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const outer = [];
+  const inner = [];
+
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    const theta = t * archSpan;
+    const width = maxWidth * Math.pow(t, 0.8);
+    const rOuter = baseRadius + width / 2;
+    const rInner = Math.max(0, baseRadius - width / 2);
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+    outer.push({ x: cx + (cosT * rOuter * cos - sinT * rOuter * sin), y: cy + (cosT * rOuter * sin + sinT * rOuter * cos) });
+    inner.push({ x: cx + (cosT * rInner * cos - sinT * rInner * sin), y: cy + (cosT * rInner * sin + sinT * rInner * cos) });
+  }
+
+  inner.reverse();
+  return outer.concat(inner);
+}
+
+// Walks a stroke's recorded path at a constant arc-length spacing (density-controlled — higher
+// density packs stamps closer together, same inverse relationship the old oscillation speed
+// had) and calls back with each stamp's position and size (tapered toward the stroke's end by
+// Width Profile, same as the old per-segment width taper).
+function walkCrescentStamps(stroke, callback) {
+  const settings = stroke.settings;
+  const totalLength = computeStrokeLength(stroke.points);
+  const baseRadius = settings.armLength;
+  const spacing = Math.max(4, baseRadius * 0.55) / settings.speed;
+  let tempDistance = 0;
+  let nextStampAt = 0;
+
+  stroke.points.forEach((point) => {
+    const dx = point.x2 - point.x1;
+    const dy = point.y2 - point.y1;
+    const segLength = Math.hypot(dx, dy);
+    if (segLength < 0.001) return;
+    const ux = dx / segLength;
+    const uy = dy / segLength;
+
+    while (nextStampAt <= tempDistance + segLength) {
+      const distIntoSeg = nextStampAt - tempDistance;
+      const sx = point.x1 + ux * distIntoSeg;
+      const sy = point.y1 + uy * distIntoSeg;
+      const tOverall = totalLength > 0 ? nextStampAt / totalLength : 0;
+      const sizeFactor = Math.max(0.15, 1 - (settings.widthProfile ?? 0) * tOverall);
+      callback(sx, sy, baseRadius * sizeFactor);
+      nextStampAt += spacing;
+    }
+
+    tempDistance += segLength;
+  });
+}
+
+function crescentMaxWidth(settings, radius) {
+  return radius * (0.35 + settings.lineWidth * 0.15);
+}
+
 function computeStrokePenBounds(stroke) {
   const settings = stroke.settings;
+  const rotation = (settings.baseAngle * Math.PI) / 180;
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
   let maxY = -Infinity;
 
-  function include(x, y) {
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
-
-  if (settings.drawMode === "solid") {
-    const { top, bottom } = buildNibEnvelope(stroke);
-    top.forEach((p) => include(p.x, p.y));
-    bottom.forEach((p) => include(p.x, p.y));
-    return { minX, maxX, minY, maxY };
-  }
-
-  const offset = getAngleOffset(settings.baseAngle);
-  let tempDistance = 0;
-
-  stroke.points.forEach((point) => {
-    const built = buildOscillationSamples(point.x1, point.y1, point.x2, point.y2, tempDistance, offset, settings);
-    if (!built) return;
-    built.samples.forEach(({ penX, penY }) => include(penX, penY));
-    tempDistance += built.distance;
+  walkCrescentStamps(stroke, (cx, cy, r) => {
+    const poly = buildCrescentPolygon(cx, cy, rotation, r, crescentMaxWidth(settings, r));
+    poly.forEach((p) => {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    });
   });
 
+  if (minX === Infinity) return { minX: 0, maxX: 0, minY: 0, maxY: 0 };
   return { minX, maxX, minY, maxY };
 }
 
@@ -1037,9 +1038,9 @@ function renderPreview() {
   }
   const circleStroke = { settings, points: verticesToStrokePoints(circleVertices) };
 
-  // The pen's per-angle arm offset (getAngleOffset) shifts the whole rendered shape by a
-  // different amount at every angle — recentering on the actual rendered bounds (rather than
-  // the nominal coordinates above) keeps the preview centered no matter which angle is picked.
+  // Rotating the crescents shifts the whole rendered shape by a different amount at every
+  // angle — recentering on the actual rendered bounds (rather than the nominal coordinates
+  // above) keeps the preview centered no matter which angle is picked.
   const lineBounds = computeStrokePenBounds(verticalStroke);
   const circleBounds = computeStrokePenBounds(circleStroke);
   const combined = {
@@ -1273,22 +1274,16 @@ document.addEventListener("click", (event) => {
 updateColorFromHsva();
 
 // ============================================================================
-// Weight / Style / Width Profile
+// Weight / Width Profile
 // ============================================================================
 
 const weightInput = document.getElementById("weightInput");
-const styleSelect = document.getElementById("styleSelect");
 const widthProfileInput = document.getElementById("widthProfileInput");
 const widthProfilePreview = document.getElementById("widthProfilePreview");
 
 weightInput?.addEventListener("input", () => {
   const parsed = parseInt(weightInput.value, 10);
   lineWidth = isFinite(parsed) ? Math.max(1, Math.min(5, parsed)) : lineWidth;
-  renderPreview();
-});
-
-styleSelect?.addEventListener("change", () => {
-  strokeStyle = styleSelect.value;
   renderPreview();
 });
 
@@ -1313,26 +1308,8 @@ widthProfileInput?.addEventListener("input", () => {
 updateWidthProfilePreview();
 
 // ============================================================================
-// Draw mode (Zig / Arc / Solid), Pen presets (Stem Thickness), Density stepper, Angle select
+// Pen presets (Stem Thickness), Density stepper, Angle select
 // ============================================================================
-
-// Zig/Arc/Solid are mutually exclusive (data-mode identifies them); Invert is a separate
-// boolean that unions onto whichever of those is active, so it's wired independently below
-// rather than joining this radio group.
-document.querySelectorAll(".draw-mode-btn[data-mode]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".draw-mode-btn[data-mode]").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    drawMode = btn.dataset.mode;
-    renderPreview();
-  });
-});
-
-document.getElementById("invertNibBtn")?.addEventListener("click", (event) => {
-  invertNib = !invertNib;
-  event.currentTarget.classList.toggle("active", invertNib);
-  renderPreview();
-});
 
 document.querySelectorAll(".pen-preset-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -1662,337 +1639,57 @@ function computeStrokeLength(points) {
   return points.reduce((sum, p) => sum + Math.hypot(p.x2 - p.x1, p.y2 - p.y1), 0);
 }
 
-function computeTaperedWidth(baseWidth, profile, t) {
-  const factor = 1 - Math.max(0, Math.min(1, profile)) * Math.max(0, Math.min(1, t));
-  return Math.max(baseWidth * factor, 0.4);
-}
 
-function dashPatternFor(style, width) {
-  if (style === "dashed") return [width * 4, width * 3];
-  if (style === "dotted") return [width * 0.6, width * 2.2];
-  return [];
-}
-
-// Finely samples the servo-arm oscillation between two skeleton points — one sample per ~1px of
-// travel — carrying both the pen-tip position (the visible mark, "arc" strokes this directly)
-// and the spine/center position it swung out from (used to close a "solid" lobe). Zig and Solid
-// both reprocess this exact same sample list, just differently, so all three draw modes trace
-// identical peaks: only how those peaks get connected/filled differs.
-function buildOscillationSamples(x1, y1, x2, y2, tempDistance, offset, settings) {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  if (distance < 0.5) return null;
-
-  const segments = Math.max(Math.ceil(distance / 1), 1);
-  const angleRangeRad = (settings.angleRange * Math.PI) / 180;
-  const baseAngleRad = (settings.baseAngle * Math.PI) / 180;
-
-  const samples = [];
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments;
-    const centerX = x1 + dx * t + offset.x;
-    const centerY = y1 + dy * t + offset.y;
-    const currentDist = tempDistance + distance * t;
-    const oscillation = Math.sin(currentDist * settings.speed);
-    const servoAngle = baseAngleRad + (oscillation * angleRangeRad) / 2;
-    const penX = centerX + Math.cos(servoAngle) * settings.armLength;
-    const penY = centerY + Math.sin(servoAngle) * settings.armLength;
-    samples.push({ centerX, centerY, penX, penY, oscillation, dist: currentDist });
-  }
-  return { samples, distance };
-}
-
-// Concatenates buildOscillationSamples across every point-pair of a whole stroke into one
-// continuous sample stream (dropping each pair's duplicate leading sample, since it's the same
-// point as the previous pair's trailing one). Zig needs this — extracting peaks/zero-crossings
-// per point-pair independently forces a spurious extra vertex at every pair boundary (wherever
-// a hand-drawn stroke's recorded mouse segments happen to fall mid-swing), breaking one clean
-// zigzag into visibly jagged little kinks. Sampling the whole stroke first avoids that entirely.
-function buildAllOscillationSamples(stroke) {
-  const settings = stroke.settings;
-  const offset = getAngleOffset(settings.baseAngle);
-  let tempDistance = 0;
-  const allSamples = [];
-
-  stroke.points.forEach((point) => {
-    const built = buildOscillationSamples(point.x1, point.y1, point.x2, point.y2, tempDistance, offset, settings);
-    if (!built) return;
-    const samples = allSamples.length > 0 ? built.samples.slice(1) : built.samples;
-    allSamples.push(...samples);
-    tempDistance += built.distance;
-  });
-
-  return allSamples;
-}
-
-// Zig keeps only the direction-change (peak/trough) samples — not the zero-crossings in
-// between — so connecting consecutive peaks directly with a straight line traces one bold
-// zigzag stroke per swing, the way the Zig icon draws it. Must run on the whole stroke's
-// samples (buildAllOscillationSamples), not one point-pair at a time: extracting per point-pair
-// forces the first/last sample of every pair to survive as a "kept" endpoint even when it isn't
-// a real peak, since each pair is treated as its own isolated run — that's what previously
-// looked like extra kinks sitting in the middle of an otherwise straight swing.
-function extractZigPoints(samples) {
-  const keep = [samples[0]];
-  for (let i = 1; i < samples.length - 1; i++) {
-    const prev = samples[i - 1].oscillation;
-    const curr = samples[i].oscillation;
-    const next = samples[i + 1].oscillation;
-    const isExtremum = (curr - prev) * (next - curr) < 0;
-    if (isExtremum) keep.push(samples[i]);
-  }
-  keep.push(samples[samples.length - 1]);
-  return keep;
-}
-
-// Renders one point-pair's oscillation onto a canvas context for Arc, or a cheap live-preview
-// approximation for Zig (see buildAllOscillationSamples for why the committed Zig render needs
-// the whole stroke instead). Returns the travel distance covered, so the caller can keep
-// tempDistance in sync with buildOscillationSamples' phase across the whole stroke.
-function drawOscillationSegment(targetCtx, x1, y1, x2, y2, tempDistance, offset, settings, width) {
-  const built = buildOscillationSamples(x1, y1, x2, y2, tempDistance, offset, settings);
-  if (!built) return 0;
-  const { samples, distance } = built;
-
-  const points = settings.drawMode === "zig" ? extractZigPoints(samples) : samples;
-  targetCtx.strokeStyle = settings.color;
-  targetCtx.lineWidth = width;
-  targetCtx.lineCap = settings.drawMode === "zig" ? "butt" : "round";
-  targetCtx.lineJoin = settings.drawMode === "zig" ? "miter" : "round";
-  targetCtx.setLineDash(dashPatternFor(settings.style, width));
-  targetCtx.beginPath();
-  points.forEach((p, i) => {
-    if (i === 0) targetCtx.moveTo(p.penX, p.penY);
-    else targetCtx.lineTo(p.penX, p.penY);
-  });
-  targetCtx.stroke();
-  targetCtx.setLineDash([]);
-
-  return distance;
-}
-
-// Draws the committed Zig stroke as one continuous zigzag across the whole path (see
-// buildAllOscillationSamples), with per-segment taper/dash so Weight/Width Profile/Style still
-// apply the way they do for Arc.
-function drawZigStroke(targetCtx, stroke) {
-  const settings = stroke.settings;
-  const totalLength = computeStrokeLength(stroke.points);
-  const zigPoints = extractZigPoints(buildAllOscillationSamples(stroke));
-  if (zigPoints.length < 2) return;
-
-  targetCtx.strokeStyle = settings.color;
-  targetCtx.lineCap = "butt";
-  targetCtx.lineJoin = "miter";
-
-  for (let i = 1; i < zigPoints.length; i++) {
-    const a = zigPoints[i - 1];
-    const b = zigPoints[i];
-    const tOverall = totalLength > 0 ? a.dist / totalLength : 0;
-    const width = computeTaperedWidth(settings.lineWidth, settings.widthProfile ?? 0, tOverall);
-    targetCtx.lineWidth = width;
-    targetCtx.setLineDash(dashPatternFor(settings.style, width));
-    targetCtx.beginPath();
-    targetCtx.moveTo(a.penX, a.penY);
-    targetCtx.lineTo(b.penX, b.penY);
-    targetCtx.stroke();
-  }
-  targetCtx.setLineDash([]);
-}
-
-// Broad (chisel) nib model for Solid: the nib is a fixed-length segment held at a CONSTANT angle
-// relative to the baseline, regardless of the stroke's direction of travel — unlike Zig/Arc's
-// oscillating arm. The stroke outline is the Minkowski sum of the skeleton path with that fixed
-// segment: offsetting every skeleton vertex by the same nib-angle vector traces the envelope a
-// broad-nib pen leaves, naturally thin where travel runs parallel to the nib edge (a "hair
-// stroke") and thick where it runs across it — exactly how a real calligraphy nib behaves.
-// The nib's physical EDGE runs perpendicular to the held pen angle (a chisel tip: you tilt the
-// pen to baseAngle, and the flat edge doing the marking sits 90° across that) — that's the
-// default, correct calligraphy orientation. Invert skips the +90° and uses the edge running
-// along baseAngle itself instead, which is backwards for real calligraphy but was the original
-// (still occasionally useful) attempt, kept around as an explicit opt-in.
-function nibEdgeAngleRad(settings) {
-  const baseRad = (settings.baseAngle * Math.PI) / 180;
-  return settings.invertNib ? baseRad : baseRad + Math.PI / 2;
-}
-
-function buildNibEnvelope(stroke) {
-  const settings = stroke.settings;
-  const totalLength = computeStrokeLength(stroke.points);
-  const nibAngleRad = nibEdgeAngleRad(settings);
-  const dirX = Math.cos(nibAngleRad);
-  const dirY = Math.sin(nibAngleRad);
-
-  const vertices = [];
-  let cumulative = 0;
-  stroke.points.forEach((p, i) => {
-    if (i === 0) vertices.push({ x: p.x1, y: p.y1, dist: 0 });
-    cumulative += Math.hypot(p.x2 - p.x1, p.y2 - p.y1);
-    vertices.push({ x: p.x2, y: p.y2, dist: cumulative });
-  });
-
-  const top = [];
-  const bottom = [];
-  vertices.forEach((v) => {
-    const tOverall = totalLength > 0 ? v.dist / totalLength : 0;
-    const halfWidth = computeTaperedWidth(settings.armLength, settings.widthProfile ?? 0, tOverall) / 2;
-    top.push({ x: v.x + dirX * halfWidth, y: v.y + dirY * halfWidth });
-    bottom.push({ x: v.x - dirX * halfWidth, y: v.y - dirY * halfWidth });
-  });
-
-  return { top, bottom };
-}
-
-// Draws the broad-nib stroke as a chain of small per-segment quads rather than one big
-// offset-envelope polygon. A single whole-stroke envelope self-intersects badly on tight curves
-// (e.g. a small "o") once the nib's half-width nears the path's local curvature radius — the
-// fixed offset direction pushes the inner edge past the path's own center and out the other
-// side, producing a self-crossing polygon that the fill rule renders as a broken, striped mess
-// (effectively a boolean subtract where it should just be solid ink) instead of a clean shape.
-// Per-segment quads sidestep this entirely: each quad spans only one short hop of the path, so
-// it stays simple regardless of how tightly the whole stroke curves, and consecutive quads share
-// their offset corner points exactly (the offset is a constant vector, not perpendicular-to-
-// tangent), so they tile together into one continuous mark with no seams or gaps — opaque
-// overlapping fills just union visually, the way real overlapping ink does.
-function drawBroadNibStroke(targetCtx, stroke) {
-  const settings = stroke.settings;
-
-  if (settings.invertNib) {
-    // Invert: unchanged — the original whole-stroke envelope polygon.
-    const { top, bottom } = buildNibEnvelope(stroke);
-    if (top.length < 2) return;
-    targetCtx.fillStyle = settings.color;
-    targetCtx.beginPath();
-    targetCtx.moveTo(top[0].x, top[0].y);
-    for (let i = 1; i < top.length; i++) targetCtx.lineTo(top[i].x, top[i].y);
-    for (let i = bottom.length - 1; i >= 0; i--) targetCtx.lineTo(bottom[i].x, bottom[i].y);
-    targetCtx.closePath();
-    targetCtx.fill();
-    return;
-  }
-
-  // Solid (default): one whole-stroke envelope self-intersects badly on tight curves (e.g. a
-  // small "o") once the nib's half-width nears the path's local curvature radius — the fixed
-  // offset pushes the inner edge past the path's own center and out the other side, and the
-  // resulting winding pattern renders as a broken, striped mess instead of a clean shape.
-  // Per-segment quads, each filled separately, stay simple regardless of curvature — matching
-  // buildSvgPathsForStroke's one-<path>-per-segment export. Each quad is stretched a hair past
-  // its own segment (SEAM_OVERLAP) at both ends so it overlaps its neighbor instead of exactly
-  // touching — two independently anti-aliased edges meeting at precisely the same line still
-  // leave a faint seam (neither one is fully opaque right at the boundary), which shows up as
-  // the thin white cracks between adjacent letters' strokes; the overlap paints over that gap.
-  const SEAM_OVERLAP = 0.75;
-  const totalLength = computeStrokeLength(stroke.points);
-  const nibAngleRad = nibEdgeAngleRad(settings);
-  const dirX = Math.cos(nibAngleRad);
-  const dirY = Math.sin(nibAngleRad);
-
-  targetCtx.fillStyle = settings.color;
-
-  let tempDistance = 0;
-  stroke.points.forEach((p) => {
-    const segLength = Math.hypot(p.x2 - p.x1, p.y2 - p.y1);
-    const tOverall = totalLength > 0 ? tempDistance / totalLength : 0;
-    const halfWidth = computeTaperedWidth(settings.armLength, settings.widthProfile ?? 0, tOverall) / 2;
-    const ox = dirX * halfWidth;
-    const oy = dirY * halfWidth;
-
-    const ux = segLength > 0 ? (p.x2 - p.x1) / segLength : 0;
-    const uy = segLength > 0 ? (p.y2 - p.y1) / segLength : 0;
-    const x1 = p.x1 - ux * SEAM_OVERLAP;
-    const y1 = p.y1 - uy * SEAM_OVERLAP;
-    const x2 = p.x2 + ux * SEAM_OVERLAP;
-    const y2 = p.y2 + uy * SEAM_OVERLAP;
-
-    targetCtx.beginPath();
-    targetCtx.moveTo(x1 + ox, y1 + oy);
-    targetCtx.lineTo(x2 + ox, y2 + oy);
-    targetCtx.lineTo(x2 - ox, y2 - oy);
-    targetCtx.lineTo(x1 - ox, y1 - oy);
-    targetCtx.closePath();
-    targetCtx.fill();
-    // The along-travel overlap above closes gaps within one stroke, but where two separate
-    // strokes cross near a junction (e.g. a "b"'s stem and bowl), their quads don't necessarily
-    // extend toward each other — a thin outline stroke pads this quad by ~1px in every
-    // direction, not just along travel, which is enough to paper over that kind of gap too.
-    targetCtx.lineWidth = 2;
-    targetCtx.strokeStyle = settings.color;
-    targetCtx.stroke();
-
-    tempDistance += segLength;
-  });
-}
-
-// Draws one stored stroke (freehand or font-derived) onto a canvas context, honoring taper,
-// dash style, and draw mode. Shared by the main canvas redraw, PNG export, and JPG export.
+// Draws one stored stroke (freehand or font-derived) onto a canvas context as a row of
+// overlapping crescent stamps. Shared by the main canvas redraw, PNG export, and JPG export.
 function drawStrokeToContext(targetCtx, stroke) {
   const settings = stroke.settings;
+  const rotation = (settings.baseAngle * Math.PI) / 180;
+  targetCtx.fillStyle = settings.color;
 
-  if (settings.drawMode === "solid") {
-    drawBroadNibStroke(targetCtx, stroke);
-    return;
-  }
-  if (settings.drawMode === "zig") {
-    drawZigStroke(targetCtx, stroke);
-    return;
-  }
-
-  const totalLength = computeStrokeLength(stroke.points);
-  const offset = getAngleOffset(settings.baseAngle);
-  let tempDistance = 0;
-
-  stroke.points.forEach((point) => {
-    const tOverall = totalLength > 0 ? tempDistance / totalLength : 0;
-    const width = computeTaperedWidth(settings.lineWidth, settings.widthProfile ?? 0, tOverall);
-    tempDistance += drawOscillationSegment(
-      targetCtx,
-      point.x1,
-      point.y1,
-      point.x2,
-      point.y2,
-      tempDistance,
-      offset,
-      settings,
-      width,
-    );
+  walkCrescentStamps(stroke, (cx, cy, r) => {
+    const poly = buildCrescentPolygon(cx, cy, rotation, r, crescentMaxWidth(settings, r));
+    targetCtx.beginPath();
+    targetCtx.moveTo(poly[0].x, poly[0].y);
+    for (let i = 1; i < poly.length; i++) targetCtx.lineTo(poly[i].x, poly[i].y);
+    targetCtx.closePath();
+    targetCtx.fill();
   });
 }
 
-// Live in-progress stroke (during mousemove): flat width for responsiveness — the width
-// profile taper needs the stroke's full length, which isn't known until the mouse is released.
+// Live in-progress stroke (during mousemove): stamps crescents as the pointer moves, at the
+// stroke's starting (untapered) size — the Width Profile taper needs the stroke's full length,
+// which isn't known until the pointer is released, same reasoning the old renderer used.
+let nextStampDistance = 0;
+
 function drawLiveSegment(x1, y1, x2, y2) {
   const settings = currentPenSettings();
+  const rotation = (settings.baseAngle * Math.PI) / 180;
+  const baseRadius = settings.armLength;
+  const maxWidth = crescentMaxWidth(settings, baseRadius);
+  const spacing = Math.max(4, baseRadius * 0.55) / settings.speed;
 
-  if (settings.drawMode === "solid") {
-    // The nib angle is constant (unlike Zig/Arc's oscillating arm), so a single segment's
-    // envelope needs no history from earlier segments — safe to draw live, one quad at a time.
-    // Stretched a hair past its own segment (see drawBroadNibStroke) so it overlaps the next
-    // live quad instead of exactly touching it, avoiding the same hairline-seam issue.
-    const nibAngleRad = nibEdgeAngleRad(settings);
-    const dirX = Math.cos(nibAngleRad);
-    const dirY = Math.sin(nibAngleRad);
-    const halfWidth = settings.armLength / 2;
-    const segLength = Math.hypot(x2 - x1, y2 - y1);
-    const ux = segLength > 0 ? (x2 - x1) / segLength : 0;
-    const uy = segLength > 0 ? (y2 - y1) / segLength : 0;
-    const ex1 = x1 - ux * 0.75;
-    const ey1 = y1 - uy * 0.75;
-    const ex2 = x2 + ux * 0.75;
-    const ey2 = y2 + uy * 0.75;
-    ctx.fillStyle = settings.color;
+  const segLength = Math.hypot(x2 - x1, y2 - y1);
+  if (segLength < 0.001) return;
+  const ux = (x2 - x1) / segLength;
+  const uy = (y2 - y1) / segLength;
+
+  ctx.fillStyle = settings.color;
+
+  while (nextStampDistance <= totalDistance + segLength) {
+    const distIntoSeg = nextStampDistance - totalDistance;
+    const sx = x1 + ux * distIntoSeg;
+    const sy = y1 + uy * distIntoSeg;
+    const poly = buildCrescentPolygon(sx, sy, rotation, baseRadius, maxWidth);
     ctx.beginPath();
-    ctx.moveTo(ex1 + dirX * halfWidth, ey1 + dirY * halfWidth);
-    ctx.lineTo(ex2 + dirX * halfWidth, ey2 + dirY * halfWidth);
-    ctx.lineTo(ex2 - dirX * halfWidth, ey2 - dirY * halfWidth);
-    ctx.lineTo(ex1 - dirX * halfWidth, ey1 - dirY * halfWidth);
+    ctx.moveTo(poly[0].x, poly[0].y);
+    for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
     ctx.closePath();
     ctx.fill();
-    totalDistance += segLength;
-    return;
+    nextStampDistance += spacing;
   }
 
-  const offset = getAngleOffset(settings.baseAngle);
-  totalDistance += drawOscillationSegment(ctx, x1, y1, x2, y2, totalDistance, offset, settings, settings.lineWidth);
+  totalDistance += segLength;
 }
 
 // Converts a mouse event's screen position to world coordinates — i.e. undoes the current
@@ -2126,6 +1823,7 @@ canvas.addEventListener("pointerdown", (e) => {
   lastX = x;
   lastY = y;
   totalDistance = 0;
+  nextStampDistance = 0;
 
   currentStroke = {
     type: "freehand",
@@ -2256,124 +1954,16 @@ function redo() {
 // Export: SVG / PNG / JPG
 // ============================================================================
 
-function catmullRom2bezier(points) {
-  let d = "";
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[i - 1] || points[i];
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const p3 = points[i + 2] || p2;
-
-    const cp1x = p1.x + (p2.x - p0.x) / 6;
-    const cp1y = p1.y + (p2.y - p0.y) / 6;
-    const cp2x = p2.x - (p3.x - p1.x) / 6;
-    const cp2y = p2.y - (p3.y - p1.y) / 6;
-
-    d += `C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x},${p2.y} `;
-  }
-  return d;
-}
-
-// Mirrors drawStrokeToContext's geometry but emits one <path> per recorded point-pair (each
-// can carry its own tapered stroke-width and dasharray, matching the canvas render).
+// Mirrors drawStrokeToContext's geometry: one <path> per stamped crescent.
 function buildSvgPathsForStroke(stroke) {
   const settings = stroke.settings;
+  const rotation = (settings.baseAngle * Math.PI) / 180;
   const paths = [];
 
-  if (settings.drawMode === "solid") {
-    if (settings.invertNib) {
-      // Invert: unchanged — the original whole-stroke envelope polygon.
-      const { top, bottom } = buildNibEnvelope(stroke);
-      if (top.length >= 2) {
-        const outEdge = top.map((p) => `${p.x} ${p.y}`).join(" L ");
-        const backEdge = bottom
-          .slice()
-          .reverse()
-          .map((p) => `${p.x} ${p.y}`)
-          .join(" L ");
-        const d = `M ${outEdge} L ${backEdge} Z`;
-        paths.push(`<path d="${d}" fill="${settings.color}" stroke="none" />`);
-      }
-      return paths;
-    }
-
-    // One <path> per segment (matching drawBroadNibStroke's canvas render) rather than one
-    // whole-stroke envelope — a single envelope self-intersects on tight curves; see
-    // drawBroadNibStroke's comment for why. Each quad is stretched a hair past its own segment
-    // (SEAM_OVERLAP) so adjacent quads overlap instead of exactly touching, same reason as the
-    // canvas version: two independently-edged shapes meeting at precisely the same line can
-    // still render a hairline gap between them.
-    const SEAM_OVERLAP = 0.75;
-    const totalLength = computeStrokeLength(stroke.points);
-    const nibAngleRad = nibEdgeAngleRad(settings);
-    const dirX = Math.cos(nibAngleRad);
-    const dirY = Math.sin(nibAngleRad);
-    let tempDistance = 0;
-
-    stroke.points.forEach((p) => {
-      const segLength = Math.hypot(p.x2 - p.x1, p.y2 - p.y1);
-      const tOverall = totalLength > 0 ? tempDistance / totalLength : 0;
-      const halfWidth = computeTaperedWidth(settings.armLength, settings.widthProfile ?? 0, tOverall) / 2;
-      const ox = dirX * halfWidth;
-      const oy = dirY * halfWidth;
-
-      const ux = segLength > 0 ? (p.x2 - p.x1) / segLength : 0;
-      const uy = segLength > 0 ? (p.y2 - p.y1) / segLength : 0;
-      const x1 = p.x1 - ux * SEAM_OVERLAP;
-      const y1 = p.y1 - uy * SEAM_OVERLAP;
-      const x2 = p.x2 + ux * SEAM_OVERLAP;
-      const y2 = p.y2 + uy * SEAM_OVERLAP;
-
-      const d = `M ${x1 + ox} ${y1 + oy} L ${x2 + ox} ${y2 + oy} L ${x2 - ox} ${y2 - oy} L ${x1 - ox} ${y1 - oy} Z`;
-      // Also stroked (not just filled) with a thin outline in the same color — see
-      // drawBroadNibStroke's comment: this pads the quad ~0.5px in every direction, closing gaps
-      // where two separate strokes cross at a junction the along-travel overlap can't reach.
-      paths.push(`<path d="${d}" fill="${settings.color}" stroke="${settings.color}" stroke-width="2" />`);
-      tempDistance += segLength;
-    });
-
-    return paths;
-  }
-
-  const totalLength = computeStrokeLength(stroke.points);
-
-  if (settings.drawMode === "zig") {
-    const zigPoints = extractZigPoints(buildAllOscillationSamples(stroke));
-    for (let i = 1; i < zigPoints.length; i++) {
-      const a = zigPoints[i - 1];
-      const b = zigPoints[i];
-      const tOverall = totalLength > 0 ? a.dist / totalLength : 0;
-      const width = computeTaperedWidth(settings.lineWidth, settings.widthProfile ?? 0, tOverall);
-      const dash = dashPatternFor(settings.style, width);
-      const d = `M ${a.penX} ${a.penY} L ${b.penX} ${b.penY}`;
-      paths.push(
-        `<path d="${d}" fill="none" stroke="${settings.color}" stroke-width="${width.toFixed(2)}" stroke-linecap="butt" stroke-linejoin="miter"${dash.length ? ` stroke-dasharray="${dash.join(",")}"` : ""} />`,
-      );
-    }
-    return paths;
-  }
-
-  const offset = getAngleOffset(settings.baseAngle);
-  let tempDistance = 0;
-
-  stroke.points.forEach((point) => {
-    const built = buildOscillationSamples(point.x1, point.y1, point.x2, point.y2, tempDistance, offset, settings);
-    if (!built) return;
-    const { samples, distance } = built;
-
-    const tOverall = totalLength > 0 ? tempDistance / totalLength : 0;
-    const width = computeTaperedWidth(settings.lineWidth, settings.widthProfile ?? 0, tOverall);
-    const dash = dashPatternFor(settings.style, width);
-
-    const penPoints = samples.map((p) => ({ x: p.penX, y: p.penY }));
-    if (penPoints.length >= 2) {
-      const d = `M ${penPoints[0].x} ${penPoints[0].y} ` + catmullRom2bezier(penPoints);
-      paths.push(
-        `<path d="${d}" fill="none" stroke="${settings.color}" stroke-width="${width.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"${dash.length ? ` stroke-dasharray="${dash.join(",")}"` : ""} />`,
-      );
-    }
-
-    tempDistance += distance;
+  walkCrescentStamps(stroke, (cx, cy, r) => {
+    const poly = buildCrescentPolygon(cx, cy, rotation, r, crescentMaxWidth(settings, r));
+    const d = `M ${poly.map((p) => `${p.x} ${p.y}`).join(" L ")} Z`;
+    paths.push(`<path d="${d}" fill="${settings.color}" stroke="none" />`);
   });
 
   return paths;

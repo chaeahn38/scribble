@@ -41,32 +41,6 @@
           <section class="panel-section">
             <h2>Pen</h2>
 
-            <div class="draw-mode-row" id="drawModeRow">
-              <button class="draw-mode-btn" type="button" data-mode="zig" aria-label="Zig">
-                <svg class="draw-mode-icon" viewBox="0 0 40 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="miter">
-                  <path d="M4,6 L13,15 L20,6 L27,15 L34,6" />
-                </svg>
-                <span>Zig</span>
-              </button>
-              <button class="draw-mode-btn active" type="button" data-mode="arc" aria-label="Arc">
-                <svg class="draw-mode-icon" viewBox="0 0 40 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M4,6 Q9,16 13,7 Q17,-2 20,7 Q23,16 27,7 Q31,-2 34,7" />
-                </svg>
-                <span>Arc</span>
-              </button>
-              <button class="draw-mode-btn" type="button" data-mode="solid" aria-label="Solid">
-                <span class="draw-mode-solid-swatch"></span>
-                <span>Solid</span>
-              </button>
-              <button class="draw-mode-btn" type="button" id="invertNibBtn" aria-label="Invert nib angle">
-                <svg class="draw-mode-icon" viewBox="0 0 40 20" fill="currentColor">
-                  <path d="M8,3 L8,17 L19,10 Z" />
-                  <path d="M32,3 L32,17 L21,10 Z" />
-                </svg>
-                <span>Invert</span>
-              </button>
-            </div>
-
             <div class="pen-preset-row" id="penPresetRow">
               <button class="pen-preset-btn" type="button" data-arm="10" aria-label="Thin stem">
                 <span class="pen-dash" style="width: 8px; height: 4px"></span>
@@ -198,15 +172,6 @@
                 value="1"
                 inputmode="numeric"
               />
-            </div>
-
-            <div class="control-row">
-              <label for="styleSelect">Style</label>
-              <select class="pill select-input" id="styleSelect">
-                <option value="solid">— Solid</option>
-                <option value="dashed">╌╌ Dashed</option>
-                <option value="dotted">···· Dotted</option>
-              </select>
             </div>
 
             <div class="control-row">
