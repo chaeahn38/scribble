@@ -927,12 +927,16 @@ function sampleArcPoints(cx, cy, rotation, radius, archSpan = ARC_SPAN, segments
   return points;
 }
 
-// One stamp = `repeats` concentric arcs sharing the same pivot and angular span, radii evenly
-// spaced from baseRadius/repeats out to baseRadius — the nested-fan texture from the reference
-// photo. Calls back once per arc with its sampled points.
+// One stamp = `repeats` concentric arcs sharing the same pivot, radii evenly spaced from
+// baseRadius/repeats out to baseRadius. Each ring also sweeps a different angular span — the
+// innermost is the shortest (a stub) and the outermost gets the full ARC_SPAN — rather than
+// every ring sharing one span, which traced the same wedge at every radius and read as
+// concentric rings (a Wi-Fi icon) instead of a layered feather/flick fan.
 function forEachFanArc(cx, cy, rotation, baseRadius, repeats, callback) {
   for (let i = 1; i <= repeats; i++) {
-    callback(sampleArcPoints(cx, cy, rotation, (baseRadius * i) / repeats));
+    const radius = (baseRadius * i) / repeats;
+    const span = (ARC_SPAN * i) / repeats;
+    callback(sampleArcPoints(cx, cy, rotation, radius, span));
   }
 }
 
